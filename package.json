@@ -1,0 +1,23 @@
+{
+  "name": "consolio",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "vite build",
+    "start": "node server.js",
+    "dev": "vite",
+    "dev:api": "node --env-file=.env --watch server.js"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  }
+}
