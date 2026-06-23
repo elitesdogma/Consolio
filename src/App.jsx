@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { buildModel, createFormatters, chartPath, tone, toneChip } from './lib/model.js';
+import { buildModel, createFormatters, chartPath, tone, toneChip, fxSensitivity } from './lib/model.js';
 import { loadPortfolio, savePortfolio, fetchQuotes, fetchFx, fetchSparks } from './lib/api.js';
 
 const REFRESH_INTERVAL_MS = 120_000;
@@ -103,13 +103,99 @@ function Sparkline({ data, color }) {
   );
 }
 
+/* ---- concentration colour bands (display heuristics; tune to taste) ---- */
+const CONC_BANDS = [
+  { min: 0.30, key: 'crit', colour: 'var(--crit)' },
+  { min: 0.20, key: 'high', colour: 'var(--high)' },
+  { min: 0.12, key: 'med', colour: 'var(--med)' },
+  { min: 0, key: 'low', colour: 'var(--low)' },
+];
+const concBand = (w) => CONC_BANDS.find((b) => w >= b.min) ?? CONC_BANDS[CONC_BANDS.length - 1];
+
+/* Single-name concentration over the priced firm-wide book. Read-only. */
+function ConcentrationPanel({ conc }) {
+  if (!conc || conc.weights.length === 0) return null;
+  const largestBand = concBand(conc.largest.weight);
+  const lead =
+    largestBand.key === 'low'
+      ? { chip: 'low', text: 'Spread across names' }
+      : { chip: largestBand.key, text: `Single-name weight: ${conc.largest.key} ${(conc.largest.weight * 100).toFixed(0)}%` };
+  const stats = [
+    { label: 'Largest', value: `${(conc.largest.weight * 100).toFixed(1)}%`, sub: conc.largest.key },
+    { label: 'Top 5', value: `${(conc.top5 * 100).toFixed(0)}%`, sub: `${conc.weights.length} names` },
+    { label: 'Effective', value: conc.effectiveNames != null ? conc.effectiveNames.toFixed(1) : '—', sub: 'equal-wt eq.' },
+  ];
+  return (
+    <section className="glass-2" style={{ borderRadius: 22, padding: '16px 18px', marginBottom: 14 }}>
+      <div className="sec-t" style={{ marginBottom: 12 }}><span>Concentration</span></div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 14 }}>
+        {stats.map((s, i) => (
+          <div key={i} className="stat">
+            <div className="eyebrow">{s.label}</div>
+            <div className="mono" style={{ fontSize: 17, fontWeight: 600, marginTop: 5 }}>{s.value}</div>
+            <div className="mono" style={{ fontSize: 9, letterSpacing: '0.06em', color: 'var(--ink-4)', marginTop: 3, textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.sub}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+        {conc.weights.slice(0, 5).map((w) => (
+          <div key={w.key} style={{ display: 'grid', gridTemplateColumns: '46px 1fr 44px', gap: 10, alignItems: 'center' }}>
+            <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{w.key}</span>
+            <span style={{ height: 8, borderRadius: 5, background: 'rgba(127,127,127,0.16)', overflow: 'hidden' }}>
+              <span style={{ display: 'block', height: '100%', width: `${(w.weight * 100).toFixed(1)}%`, background: concBand(w.weight).colour, transition: 'width var(--dur) var(--ease)' }} />
+            </span>
+            <span className="mono" style={{ fontSize: 11, textAlign: 'right', color: 'var(--ink-2)' }}>{(w.weight * 100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 13 }}>
+        <span className={`chip ${lead.chip}`}><span className="dot" />{lead.text}</span>
+      </div>
+    </section>
+  );
+}
+
+/* NZD value of the USD book under daily FX moves. Always shown in NZD because
+   it is a home-currency exposure lens, independent of the display toggle. */
+function FxPanel({ usdTotal, fx }) {
+  if (!fx?.rate || !(usdTotal > 0)) return null;
+  const nzdMoney = createFormatters('USD', 1).money; // '$' + K/M abbreviation on a raw NZD number
+  const baseNzd = usdTotal * fx.rate;
+  const rows = fxSensitivity(usdTotal, fx.rate).filter((r) => r.shock !== 0);
+  const label = (s) => `NZD ${s > 0 ? 'stronger' : 'weaker'} ${Math.abs(s * 100).toFixed(0)}%`;
+  return (
+    <section className="glass-2" style={{ borderRadius: 22, padding: '16px 18px', marginBottom: 14 }}>
+      <div className="sec-t" style={{ marginBottom: 12 }}><span>NZD exposure</span></div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <div className="mono" style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em' }}>{nzdMoney(baseNzd)}</div>
+        <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>at {fx.rate.toFixed(4)} NZD/USD</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginTop: 11 }}>
+        {rows.map((r) => {
+          const delta = r.nzd - baseNzd;
+          return (
+            <div key={r.shock} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'center', padding: '7px 2px', borderTop: '1px solid var(--line-soft)' }}>
+              <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{label(r.shock)}</span>
+              <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, textAlign: 'right' }}>{nzdMoney(r.nzd)}</span>
+              <span className="mono" style={{ fontSize: 11, fontWeight: 600, textAlign: 'right', minWidth: 58, color: tone(delta) }}>{(delta >= 0 ? '+' : '-') + nzdMoney(Math.abs(delta))}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ marginTop: 11, fontSize: 11, color: 'var(--ink-4)', lineHeight: 1.45 }}>
+        A stronger NZD lowers the NZD value of USD assets. Daily reference rate, not intraday spot.
+      </div>
+    </section>
+  );
+}
+
 /* ===================== L0 · TOTAL ===================== */
-function TotalSurface({ model, fmt, currency, axis, setAxis, openHolder, openSecurity, quoteNotice, pricesAsOf, holdingSort, setHoldingSort, holdingQuery, setHoldingQuery, onAdd }) {
+function TotalSurface({ model, fmt, currency, fx, axis, setAxis, openHolder, openSecurity, quoteNotice, pricesAsOf, holdingSort, setHoldingSort, holdingQuery, setHoldingQuery, onAdd }) {
   const { firm, holderCards, securityCards } = model;
   const empty = firm.holdersCount === 0;
   const [sortOpen, setSortOpen] = useState(false);
 
-  const SORT_LABELS = { value: 'Value', return: 'Return', symbol: 'Symbol', holder: 'Holders' };
+  const SORT_LABELS = { value: 'Value', lifetime: 'Return', return: 'Day', symbol: 'Symbol', holder: 'Holders' };
 
   // Firm-wide holdings list with filter (symbol / name / sector) plus sort.
   // Derived only; securityCards already aggregates per ticker across holders.
@@ -124,6 +210,7 @@ function TotalSurface({ model, fmt, currency, axis, setAxis, openHolder, openSec
     );
     const cmp = {
       value: (a, b) => (b.mv ?? -1) - (a.mv ?? -1),
+      lifetime: (a, b) => (b.gainPct ?? -Infinity) - (a.gainPct ?? -Infinity),
       return: (a, b) => (b.dayPct ?? -Infinity) - (a.dayPct ?? -Infinity),
       symbol: (a, b) => a.ticker.localeCompare(b.ticker),
       holder: (a, b) => b.accountsCount - a.accountsCount || (b.mv ?? -1) - (a.mv ?? -1),
@@ -147,6 +234,13 @@ function TotalSurface({ model, fmt, currency, axis, setAxis, openHolder, openSec
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{firm.holdersCount} holders · {firm.positionsCount} positions</span>
           {firm.unpricedCount > 0 && (<span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{firm.unpricedCount} awaiting price</span>)}
         </div>
+        {firm.gainPct != null && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+            <span className={`chip ${toneChip(firm.gainPct)}`}><span className="dot" />{fmt.pct(firm.gainPct)} all time</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmt.signedMoney(firm.gain)} unrealised</span>
+            {firm.returnExcluded > 0 && (<span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{firm.returnExcluded} w/o cost</span>)}
+          </div>
+        )}
         {pricesAsOf != null && (
           <div style={{ marginTop: 9, fontSize: 11, color: 'var(--ink-4)', fontFamily: 'var(--mono)', letterSpacing: '0.02em' }}>
             Prices as of {fmtStamp(pricesAsOf)}
@@ -179,6 +273,8 @@ function TotalSurface({ model, fmt, currency, axis, setAxis, openHolder, openSec
         </section>
       ) : (
         <>
+          <ConcentrationPanel conc={firm.concentration} />
+          <FxPanel usdTotal={firm.total} fx={fx} />
           <div className="segmented">
             <button className={`seg ${axis === 'accounts' ? 'on' : ''}`} onClick={() => setAxis('accounts')}>Holders</button>
             <button className={`seg ${axis === 'securities' ? 'on' : ''}`} onClick={() => setAxis('securities')}>Securities</button>
@@ -221,7 +317,7 @@ function TotalSurface({ model, fmt, currency, axis, setAxis, openHolder, openSec
                   </button>
                   {sortOpen && (
                     <div className="glass-3" style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 30, borderRadius: 14, padding: 5, minWidth: 168 }}>
-                      {[['value', 'Value (high–low)'], ['return', 'Return (high–low)'], ['symbol', 'Symbol (A–Z)'], ['holder', 'Most held']].map(([key, label]) => (
+                      {[['value', 'Value (high–low)'], ['lifetime', 'Return · lifetime'], ['return', 'Return · today'], ['symbol', 'Symbol (A–Z)'], ['holder', 'Most held']].map(([key, label]) => (
                         <button key={key} onClick={() => { setHoldingSort(key); setSortOpen(false); }}
                           style={{ width: '100%', textAlign: 'left', border: 0, background: holdingSort === key ? 'var(--calm-g)' : 'none', color: holdingSort === key ? 'var(--calm)' : 'var(--ink)', fontSize: 13, fontWeight: holdingSort === key ? 600 : 500, padding: '9px 10px', borderRadius: 9, cursor: 'pointer' }}>
                           {label}
@@ -278,6 +374,13 @@ function AccountSurface({ holder, fmt, search, setSearch, sector, toggleSector, 
           <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{holder.count} positions</span>
           {holder.unpricedCount > 0 && (<span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{holder.unpricedCount} awaiting price</span>)}
         </div>
+        {holder.gainPct != null && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+            <span className={`chip ${toneChip(holder.gainPct)}`}><span className="dot" />{fmt.pct(holder.gainPct)} all time</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{fmt.signedMoney(holder.gain)} unrealised</span>
+            {holder.largest && (<span style={{ fontSize: 11, color: 'var(--ink-4)' }}>top {holder.largest.key} {(holder.largest.weight * 100).toFixed(0)}%</span>)}
+          </div>
+        )}
       </section>
 
       <label className="search">
@@ -408,6 +511,8 @@ function SecuritySurface({ sec, fmt, spark, openPositionFor, onEditSecurity, onR
     { label: 'Market value', value: fmt.money(sec.mv) },
     { label: 'Holders', value: String(sec.accountsCount) },
     { label: 'Avg cost', value: fmt.price(sec.wAvg) },
+    { label: 'Unrealised', value: sec.priced ? fmt.signedMoney(sec.gain) : '—', color: sec.priced && sec.gain != null ? tone(sec.gain) : 'var(--ink-3)' },
+    { label: 'Lifetime return', value: sec.priced ? fmt.pct(sec.gainPct) : '—', color: sec.priced && sec.gainPct != null ? tone(sec.gainPct) : 'var(--ink-3)' },
   ];
   return (
     <>
@@ -423,7 +528,7 @@ function SecuritySurface({ sec, fmt, spark, openPositionFor, onEditSecurity, onR
         <div style={{ marginTop: 15 }}><Sparkline data={spark} color={sec.priced ? tone(sec.dayPct) : 'var(--calm)'} /></div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8, marginTop: 17 }}>
           {stats.map((st, i) => (
-            <div key={i} className="stat"><div className="eyebrow">{st.label}</div><div className="mono" style={{ fontSize: 17, fontWeight: 600, marginTop: 5, color: 'var(--ink)' }}>{st.value}</div></div>
+            <div key={i} className="stat"><div className="eyebrow">{st.label}</div><div className="mono" style={{ fontSize: 17, fontWeight: 600, marginTop: 5, color: st.color || 'var(--ink)' }}>{st.value}</div></div>
           ))}
         </div>
       </section>
@@ -615,8 +720,10 @@ export default function App() {
   const [sheet, setSheet] = useState(null);
   const [status, setStatus] = useState(null);
   const [navKey, setNavKey] = useState(0);
+  const [conflict, setConflict] = useState(null);
 
   const screenRef = useRef(null);
+  const versionRef = useRef(null);
   const saveTimer = useRef(null);
   const statusTimer = useRef(null);
   const portfolioRef = useRef(portfolio);
@@ -679,6 +786,7 @@ export default function App() {
       .then((res) => {
         if (cancelled) return;
         setPortfolio(res.portfolio);
+        versionRef.current = res.updatedAt ?? null;
         refreshMarket(uniqueTickers(res.portfolio));
       })
       .catch((e) => { if (!cancelled) setLoadError(e.message); });
@@ -697,9 +805,22 @@ export default function App() {
     clearTimeout(saveTimer.current);
     flashStatus('Saving…', 'info', 0);
     saveTimer.current = setTimeout(() => {
-      savePortfolio(next)
-        .then(() => flashStatus('Saved'))
-        .catch((e) => flashStatus(e.message || 'Save failed', 'err', 4000));
+      savePortfolio(next, versionRef.current)
+        .then((res) => {
+          if (res?.updatedAt) versionRef.current = res.updatedAt;
+          flashStatus('Saved');
+        })
+        .catch((e) => {
+          if (e.status === 409 && e.body) {
+            setConflict({
+              latestPortfolio: e.body.portfolio,
+              latestVersion: e.body.updatedAt ?? null,
+            });
+            flashStatus('Save conflict', 'err', 0);
+          } else {
+            flashStatus(e.message || 'Save failed', 'err', 4000);
+          }
+        });
     }, 500);
   }, [flashStatus]);
 
@@ -713,6 +834,27 @@ export default function App() {
     const after = uniqueTickers(next);
     if (after.some((t) => !before.has(t))) refreshMarket(after);
   }, [persist, refreshMarket]);
+
+  /* ---- concurrency conflict resolution ---- */
+  const reloadLatest = useCallback(() => {
+    if (!conflict) return;
+    portfolioRef.current = conflict.latestPortfolio;
+    setPortfolio(conflict.latestPortfolio);
+    versionRef.current = conflict.latestVersion;
+    setConflict(null);
+    refreshMarket(uniqueTickers(conflict.latestPortfolio));
+    flashStatus('Loaded latest');
+  }, [conflict, refreshMarket, flashStatus]);
+
+  const overwriteWithMine = useCallback(() => {
+    if (!conflict) return;
+    const mine = portfolioRef.current;
+    setConflict(null);
+    flashStatus('Saving…', 'info', 0);
+    savePortfolio(mine, versionRef.current, true)
+      .then((res) => { if (res?.updatedAt) versionRef.current = res.updatedAt; flashStatus('Saved'); })
+      .catch((e) => flashStatus(e.message || 'Save failed', 'err', 4000));
+  }, [conflict, flashStatus]);
 
   /* ---- navigation ---- */
   const bump = () => setNavKey((k) => k + 1);
@@ -903,6 +1045,15 @@ export default function App() {
     <>
       <div className="field" />
       {status && <div className={`status show ${status.kind === 'err' ? 'err' : ''}`}>{status.text}</div>}
+      {conflict && (
+        <div className="conflict-bar" role="alertdialog" aria-live="assertive">
+          <div className="msg"><strong>Saved elsewhere.</strong> Another change was saved while you were editing, so your unsaved edits have not been stored.</div>
+          <div className="acts">
+            <button className="fbtn" onClick={reloadLatest}>Load latest</button>
+            <button className="fbtn danger" onClick={overwriteWithMine}>Overwrite with mine</button>
+          </div>
+        </div>
+      )}
 
       <div className="device">
         <TopBar
@@ -922,7 +1073,7 @@ export default function App() {
         <main className="screen" ref={screenRef}>
           {cur.type === 'total' && (
             <TotalSurface
-              model={model} fmt={fmt} currency={currency} axis={axis} setAxis={setAxis}
+              model={model} fmt={fmt} currency={currency} fx={fx} axis={axis} setAxis={setAxis}
               openHolder={(code) => push({ type: 'account', code })}
               openSecurity={(ticker) => push({ type: 'security', ticker })}
               quoteNotice={quoteNotice}

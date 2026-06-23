@@ -106,8 +106,22 @@ app.put(
   asyncHandler(async (req, res) => {
     if (!requireDb(res)) return;
     const clean = sanitisePortfolio(req.body);
-    const updatedAt = await savePortfolio(clean);
-    res.json({ portfolio: clean, updatedAt });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    // Key absent (undefined) means a legacy client; present-but-null means a
+    // new client that loaded an empty portfolio. Both are handled in db.js.
+    const expectedUpdatedAt = 'expectedUpdatedAt' in body ? body.expectedUpdatedAt : undefined;
+    const force = body.force === true;
+
+    const result = await savePortfolio(clean, { expectedUpdatedAt, force });
+    if (result.conflict) {
+      const latest = await getPortfolio();
+      return res.status(409).json({
+        error: 'The saved portfolio changed since you loaded it.',
+        updatedAt: latest.updatedAt,
+        portfolio: sanitisePortfolio(latest.data),
+      });
+    }
+    res.json({ portfolio: clean, updatedAt: result.updatedAt });
   })
 );
 

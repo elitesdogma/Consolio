@@ -52,24 +52,67 @@ export async function initDb() {
 export async function getPortfolio() {
   if (!pool) throw new Error('DATABASE_URL is not set');
   const { rows } = await pool.query(
-    'SELECT data, updated_at FROM portfolio WHERE id = $1',
+    `SELECT data,
+            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+       FROM portfolio WHERE id = $1`,
     [PORTFOLIO_ID]
   );
   if (rows.length === 0) return { data: EMPTY_PORTFOLIO, updatedAt: null };
   return { data: rows[0].data, updatedAt: rows[0].updated_at };
 }
 
-/** @returns {Promise<string>} the new updated_at timestamp */
-export async function savePortfolio(data) {
+/**
+ * Persist the portfolio with optimistic concurrency control.
+ *
+ * The concurrency token is the row's `updated_at`, handed to the client on read
+ * and echoed back here as `expectedUpdatedAt`. It is compared as an instant
+ * (not as text) and carried at full microsecond precision, so a token loaded
+ * from an existing row round-trips and matches exactly rather than failing on
+ * the millisecond truncation a JS Date would impose.
+ *
+ * Behaviour:
+ *  - force === true              -> unconditional write (explicit overwrite).
+ *  - expectedUpdatedAt undefined -> unconditional write (legacy client predating
+ *                                   OCC; keeps an open old tab saving during a
+ *                                   deploy rather than erroring).
+ *  - otherwise (guarded)         -> writes only if the stored token still
+ *                                   matches. A null token matches only a row
+ *                                   that does not yet exist (the first save).
+ *                                   Any mismatch returns { conflict: true } with
+ *                                   no write.
+ *
+ * @returns {Promise<{conflict: boolean, updatedAt: string|null}>}
+ */
+export async function savePortfolio(data, { expectedUpdatedAt, force } = {}) {
   if (!pool) throw new Error('DATABASE_URL is not set');
+  const tokenSql = `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+  const guarded = !force && expectedUpdatedAt !== undefined;
+
+  if (!guarded) {
+    const { rows } = await pool.query(
+      `INSERT INTO portfolio (id, data, updated_at)
+         VALUES ($1, $2, now())
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+       RETURNING ${tokenSql} AS updated_at`,
+      [PORTFOLIO_ID, data]
+    );
+    return { conflict: false, updatedAt: rows[0].updated_at };
+  }
+
+  // Guarded: the conflict branch only updates when the stored instant still
+  // matches the token the client loaded. A non-existent row inserts; a present
+  // row with a different (or null) token leaves the statement affecting zero
+  // rows, which we surface as a conflict.
   const { rows } = await pool.query(
     `INSERT INTO portfolio (id, data, updated_at)
        VALUES ($1, $2, now())
      ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
-     RETURNING updated_at`,
-    [PORTFOLIO_ID, data]
+       WHERE portfolio.updated_at = $3::timestamptz
+     RETURNING ${tokenSql} AS updated_at`,
+    [PORTFOLIO_ID, data, expectedUpdatedAt]
   );
-  return rows[0].updated_at;
+  if (rows.length === 0) return { conflict: true, updatedAt: null };
+  return { conflict: false, updatedAt: rows[0].updated_at };
 }
 
 /**

@@ -153,3 +153,17 @@ button,input,select{font-family:inherit;}
 .delbtn svg{stroke:currentColor;fill:none;stroke-width:2;}
 .banner{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:13px;background:var(--med-g);border:1px solid rgba(242,193,78,0.28);color:var(--ink-2);font-size:12px;line-height:1.45;margin-bottom:13px;}
 .banner.calm{background:var(--calm-g);border-color:rgba(91,184,255,0.28);}
+
+/* Risk-band chips (amber / orange) for concentration flags. Same token family
+   as the existing crit/low chips; only the colour variables differ. */
+.chip.med{color:var(--med);background:var(--med-g);border-color:rgba(242,193,78,0.30);}.chip.med .dot{background:var(--med);box-shadow:0 0 8px var(--med);}
+.chip.high{color:var(--high);background:var(--high-g);border-color:rgba(255,140,66,0.30);}.chip.high .dot{background:var(--high);box-shadow:0 0 8px var(--high);}
+
+/* Concurrency conflict bar: shown when a save is rejected because the stored
+   portfolio changed since load. Persistent (no auto-dismiss); the two actions
+   are the only non-silent resolutions. Glass material, crit-tinted border. */
+.conflict-bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:85;width:min(92vw,520px);display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 14px;border-radius:var(--r);background:var(--g-gloss),var(--g-tint-2);border:1px solid rgba(255,90,82,0.40);-webkit-backdrop-filter:blur(var(--g-blur)) saturate(150%);backdrop-filter:blur(var(--g-blur)) saturate(150%);box-shadow:var(--g-lift),var(--g-edge);animation:fade var(--dur) var(--ease);}
+.conflict-bar .msg{font-size:12.5px;line-height:1.42;color:var(--ink-2);flex:1 1 220px;}
+.conflict-bar .msg strong{color:var(--crit);font-weight:600;}
+.conflict-bar .acts{display:flex;gap:8px;flex-wrap:wrap;}
+.fbtn.danger{color:#fff;background:var(--crit);border-color:transparent;}

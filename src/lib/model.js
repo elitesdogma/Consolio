@@ -44,6 +44,64 @@ export function chartPath(data, w, h) {
   return { line, area: line + ` L${w} ${h} L0 ${h} Z` };
 }
 
+/**
+ * NZD exposure scenarios for a USD book. `nzdPerUsd` is NZD per 1 USD — the
+ * same rate the app already fetches (USD->NZD). A stronger NZD buys more USD,
+ * so the rate falls and the NZD value of USD assets falls; a weaker NZD lifts
+ * it. A positive shock means the NZD strengthens by that fraction.
+ * @returns {{shock:number, rate:number, nzd:number}[]}
+ */
+export function fxSensitivity(usdValue, nzdPerUsd, shocks = [0.1, 0.05, 0, -0.05, -0.1]) {
+  if (!Number.isFinite(usdValue) || !Number.isFinite(nzdPerUsd) || nzdPerUsd <= 0) return [];
+  return shocks.map((shock) => {
+    const rate = nzdPerUsd / (1 + shock);
+    return { shock, rate, nzd: usdValue * rate };
+  });
+}
+
+/**
+ * Concentration over a list of priced market values. Weights are fractions of
+ * the total; HHI is the sum of squared weights (0..1) and effectiveNames =
+ * 1/HHI is the equal-weight-equivalent holding count. Unpriced or zero items
+ * are excluded so the denominator matches the priced book.
+ * @param {{key:string, mv:number|null}[]} items
+ */
+function concentrationStats(items) {
+  const priced = items.filter((it) => Number.isFinite(it.mv) && it.mv > 0);
+  const total = priced.reduce((s, it) => s + it.mv, 0);
+  if (total <= 0) return null;
+  const weights = priced
+    .map((it) => ({ key: it.key, weight: it.mv / total }))
+    .sort((a, b) => b.weight - a.weight);
+  const hhi = weights.reduce((s, w) => s + w.weight * w.weight, 0);
+  return {
+    weights,
+    largest: weights[0],
+    top5: weights.slice(0, 5).reduce((s, w) => s + w.weight, 0),
+    hhi,
+    effectiveNames: hhi > 0 ? 1 / hhi : null,
+  };
+}
+
+/**
+ * Lifetime unrealised return over a set of positions, counting only those that
+ * are priced and carry a cost basis (avgCost > 0) so the percentage is not
+ * diluted by positions that cannot contribute one. Reports how many were
+ * excluded so the UI can flag partial coverage.
+ */
+function returnRollup(positions) {
+  const counted = positions.filter((p) => p.priced && p.avgCost > 0);
+  const costBasis = counted.reduce((s, p) => s + p.avgCost * p.shares, 0);
+  const gain = counted.reduce((s, p) => s + (p.gain ?? 0), 0);
+  return {
+    costBasis,
+    gain: counted.length ? gain : null,
+    gainPct: costBasis > 0 ? (gain / costBasis) * 100 : null,
+    countedCount: counted.length,
+    excludedCount: positions.length - counted.length,
+  };
+}
+
 const priceOf = (priceMap, ticker) => {
   const p = priceMap[ticker]?.price;
   return Number.isFinite(p) ? p : null;
@@ -98,9 +156,14 @@ export function buildModel({ holders, securities, lots, priceMap }) {
     const sectorTotals = {};
     for (const p of positions) if (p.priced) sectorTotals[p.sector] = (sectorTotals[p.sector] ?? 0) + p.mv;
     const topSector = Object.keys(sectorTotals).sort((a, b) => sectorTotals[b] - sectorTotals[a])[0] ?? '—';
+    const lifetime = returnRollup(positions);
+    const conc = concentrationStats(positions.map((p) => ({ key: p.ticker, mv: p.mv })));
     byHolder.set(holder.code, {
       code: holder.code, name: holder.name || holder.code, type: holder.type || 'Holder',
       total, dayPnl, dayPct: total > 0 ? (dayPnl / total) * 100 : 0,
+      costBasis: lifetime.costBasis, gain: lifetime.gain, gainPct: lifetime.gainPct,
+      returnCounted: lifetime.countedCount, returnExcluded: lifetime.excludedCount,
+      largest: conc?.largest ?? null, hhi: conc?.hhi ?? null, effectiveNames: conc?.effectiveNames ?? null,
       count: positions.length, unpricedCount: positions.filter((p) => !p.priced).length,
       topSector, positions,
     });
@@ -122,11 +185,14 @@ export function buildModel({ holders, securities, lots, priceMap }) {
     holderPositions.sort((a, b) => (b.mv ?? -1) - (a.mv ?? -1));
     const firmShares = holderPositions.reduce((s, p) => s + p.shares, 0);
     const costSum = holderPositions.reduce((s, p) => s + p.avgCost * p.shares, 0);
+    const wAvg = firmShares > 0 ? costSum / firmShares : 0;
     byTicker.set(ticker, {
       ticker, name: meta.name || ticker, sector: meta.sector || 'Uncategorised',
       price, dayPct, priced,
       firmShares, mv: priced ? firmShares * price : null,
-      wAvg: firmShares > 0 ? costSum / firmShares : 0,
+      wAvg,
+      gain: priced && wAvg > 0 ? (price - wAvg) * firmShares : null,
+      gainPct: priced && wAvg > 0 ? (price / wAvg - 1) * 100 : null,
       accountsCount: holderPositions.length, holders: holderPositions,
     });
   }
@@ -161,9 +227,20 @@ export function buildModel({ holders, securities, lots, priceMap }) {
     colour: rampColour(i, sectorNames.length),
   }));
 
+  // Firm-wide lifetime return and single-name concentration. Both derive only
+  // from data already aggregated above; no new stored field is introduced.
+  const firmPositions = holderList.flatMap((h) => h.positions);
+  const firmLifetime = returnRollup(firmPositions);
+  const firmConcentration = concentrationStats(
+    [...byTicker.values()].map((s) => ({ key: s.ticker, mv: s.mv }))
+  );
+
   return {
     firm: {
       total: firmTotal, dayPnl: firmDayPnl, dayPct: firmTotal > 0 ? (firmDayPnl / firmTotal) * 100 : 0,
+      costBasis: firmLifetime.costBasis, gain: firmLifetime.gain, gainPct: firmLifetime.gainPct,
+      returnCounted: firmLifetime.countedCount, returnExcluded: firmLifetime.excludedCount,
+      concentration: firmConcentration,
       holdersCount: holders.length,
       positionsCount: holderList.reduce((s, h) => s + h.count, 0),
       unpricedCount: holderList.reduce((s, h) => s + h.unpricedCount, 0),

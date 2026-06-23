@@ -13,6 +13,7 @@ async function request(url, options) {
     const message = body?.error || `Request failed (${res.status})`;
     const err = new Error(message);
     err.status = res.status;
+    err.body = body;
     throw err;
   }
   return body;
@@ -22,11 +23,16 @@ export function loadPortfolio() {
   return request('/api/portfolio');
 }
 
-export function savePortfolio(portfolio) {
+export function savePortfolio(portfolio, expectedUpdatedAt, force = false) {
+  // expectedUpdatedAt is the token from the last load/save (string, or null if
+  // the portfolio was empty). Sending it engages the server's OCC guard; force
+  // overrides it for an explicit overwrite.
+  const payload = { ...portfolio, expectedUpdatedAt };
+  if (force) payload.force = true;
   return request('/api/portfolio', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(portfolio),
+    body: JSON.stringify(payload),
   });
 }
 
