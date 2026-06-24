@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { buildModel, createFormatters, chartPath, tone, toneChip, fxSensitivity } from './lib/model.js';
 import { loadPortfolio, savePortfolio, fetchQuotes, fetchFx, fetchSparks } from './lib/api.js';
-import { parseIbkrCsv, buildImportPlan } from './lib/ibkr.js';
+import { parseIbkrCsv } from './lib/ibkr.js';
+import { parseSharesiesCsv } from './lib/sharesies.js';
+import { buildImportPlan } from './lib/imports.js';
 
 const REFRESH_INTERVAL_MS = 120_000;
 const EASE = 'cubic-bezier(0.22,1,0.36,1)';
@@ -698,7 +700,7 @@ function AddSheet({ sheet, model, fmt, setDraft, setTab, onSubmitLot, onSubmitHo
             </>
           )}
           {!sheet.singleTab && (
-            <button className="pill" onClick={onOpenImport} style={{ width: '100%', marginTop: 16 }}><IUpload />Import holdings from IBKR</button>
+            <button className="pill" onClick={onOpenImport} style={{ width: '100%', marginTop: 16 }}><IUpload />Import holdings from CSV</button>
           )}
         </div>
       </div>
@@ -707,7 +709,21 @@ function AddSheet({ sheet, model, fmt, setDraft, setTab, onSubmitLot, onSubmitHo
 }
 
 /* ============================== import sheet ============================== */
+const IMPORT_SOURCES = {
+  IBKR: {
+    label: 'Interactive Brokers',
+    parse: parseIbkrCsv,
+    hint: 'Upload a native IBKR Activity Statement (CSV). Consolio reads the Open Positions section: your current US-stock holdings, quantities and cost basis.',
+  },
+  Sharesies: {
+    label: 'Sharesies',
+    parse: parseSharesiesCsv,
+    hint: 'Upload a Sharesies Investment holdings report (CSV). Set the report’s From date to before your first purchase so cost basis is complete for every holding.',
+  },
+};
+
 function ImportSheet({ portfolio, onImport, onClose }) {
+  const [source, setSource] = useState(null);
   const [parsed, setParsed] = useState(null);
   const [fileName, setFileName] = useState('');
   const [holderCode, setHolderCode] = useState('');
@@ -717,27 +733,28 @@ function ImportSheet({ portfolio, onImport, onClose }) {
   const holders = portfolio?.holders ?? [];
   const code = holderCode.trim();
   const existing = holders.find((h) => h.code === code);
+  const cfg = source ? IMPORT_SOURCES[source] : null;
 
   const onFile = (e) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !cfg) return;
     setError('');
     setFileName(file.name);
     const stem = file.name.replace(/\.[^.]+$/, '').trim().toUpperCase().slice(0, 12);
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const res = parseIbkrCsv(String(reader.result));
+        const res = cfg.parse(String(reader.result));
         if (!res.ok) {
           setParsed(null);
-          setError('No US stock positions found. Is this an IBKR Activity Statement with an Open Positions section?');
+          setError(res.warnings?.[0] || 'No current US-stock holdings found in this file.');
           return;
         }
         setParsed(res);
         setHolderCode((cur) => cur || stem);
       } catch {
         setParsed(null);
-        setError('Could not read this file as an IBKR CSV.');
+        setError('Could not read this file.');
       }
     };
     reader.onerror = () => setError('Could not read the file.');
@@ -745,6 +762,7 @@ function ImportSheet({ portfolio, onImport, onClose }) {
   };
 
   const muted = (size) => ({ fontSize: size, color: 'var(--ink-3)' });
+  const backToFile = () => { setParsed(null); setFileName(''); setError(''); };
 
   return (
     <>
@@ -753,23 +771,32 @@ function ImportSheet({ portfolio, onImport, onClose }) {
         <div className="sheet glass-3">
           <div className="sheet-handle" />
           <div className="sheet-title">
-            <h3>Import from IBKR</h3>
+            <h3>{cfg ? `Import from ${cfg.label}` : 'Import holdings'}</h3>
             <button className="iconbtn" onClick={onClose} aria-label="Close"><IX /></button>
           </div>
 
-          <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: 'none' }} />
-
-          {!parsed ? (
+          {!source && (
             <div>
-              <p style={{ ...muted(13), lineHeight: 1.5, margin: '2px 0 16px' }}>
-                Upload a native IBKR Activity Statement (CSV). Consolio reads the Open Positions section: your current US stock holdings, their quantities and cost basis.
-              </p>
+              <p style={{ ...muted(13), lineHeight: 1.5, margin: '2px 0 16px' }}>Import current holdings from a broker CSV. Choose your broker.</p>
+              {Object.entries(IMPORT_SOURCES).map(([key, c]) => (
+                <button key={key} className="pill" onClick={() => setSource(key)} style={{ width: '100%', marginBottom: 8 }}>{c.label}<IArrowR /></button>
+              ))}
+            </div>
+          )}
+
+          {source && !parsed && (
+            <div>
+              <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: 'none' }} />
+              <p style={{ ...muted(13), lineHeight: 1.5, margin: '2px 0 16px' }}>{cfg.hint}</p>
               <button className="pill accent" onClick={() => fileRef.current?.click()} style={{ width: '100%' }}><IUpload />Choose CSV file</button>
               {error && <div className="banner" style={{ marginTop: 12 }}><span>{error}</span></div>}
+              <button className="pill" onClick={() => setSource(null)} style={{ width: '100%', marginTop: 8 }}>Back</button>
             </div>
-          ) : (
+          )}
+
+          {source && parsed && (
             <div>
-              <div style={{ ...muted(12), marginBottom: 12 }}>{fileName} · {parsed.positions.length} positions</div>
+              <div style={{ ...muted(12), marginBottom: 12 }}>{fileName} · {parsed.positions.length} current holdings</div>
 
               <div className="field-group">
                 <label className="field-label">Import into holder</label>
@@ -777,29 +804,29 @@ function ImportSheet({ portfolio, onImport, onClose }) {
               </div>
               <div style={{ ...muted(11.5), margin: '-6px 0 14px' }}>
                 {existing
-                  ? `Updates ${existing.name || existing.code}. Replaces ${existing.code}'s IBKR holdings; manually added lots are kept.`
-                  : code ? `Creates a new holder “${code}”.` : 'Enter a holder code (e.g. your initials).'}
+                  ? `Updates ${existing.name || existing.code}. Replaces ${existing.code}'s ${source} import; manual lots and other imports are kept.`
+                  : code ? `Creates a new holder “${code}”.` : 'Enter a holder code (e.g. initials).'}
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 240, overflowY: 'auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 230, overflowY: 'auto' }}>
                 {parsed.positions.map((p) => (
                   <div key={p.ticker} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'baseline', padding: '5px 2px', borderTop: '1px solid var(--line-soft)' }}>
                     <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{p.ticker}</span>
-                    <span className="mono" style={{ ...muted(12) }}>{p.shares} sh</span>
-                    <span className="mono" style={{ fontSize: 12, textAlign: 'right', minWidth: 78 }}>${p.costPerShare.toFixed(2)}</span>
+                    <span className="mono" style={{ ...muted(12) }}>{Number(p.shares).toLocaleString('en-US', { maximumFractionDigits: 4 })} sh</span>
+                    <span className="mono" style={{ fontSize: 12, textAlign: 'right', minWidth: 78, color: p.costPerShare > 0 ? 'var(--ink)' : 'var(--ink-4)' }}>{p.costPerShare > 0 ? '$' + p.costPerShare.toFixed(2) : 'no cost'}</span>
                   </div>
                 ))}
               </div>
 
               {parsed.warnings.length > 0 && (
                 <div className="banner" style={{ marginTop: 12 }}>
-                  <span style={{ fontSize: 12 }}>{parsed.warnings.length} row(s) skipped. {parsed.warnings.slice(0, 2).join(' ')}{parsed.warnings.length > 2 ? ' …' : ''}</span>
+                  <span style={{ fontSize: 12 }}>{parsed.warnings.slice(0, 3).join(' ')}{parsed.warnings.length > 3 ? ` (+${parsed.warnings.length - 3} more)` : ''}</span>
                 </div>
               )}
 
               <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                <button className="pill" onClick={onClose} style={{ flex: 1 }}>Cancel</button>
-                <button className="pill accent" disabled={!code} onClick={() => onImport(parsed, code)} style={{ flex: 2 }}>Import {parsed.positions.length} positions</button>
+                <button className="pill" onClick={backToFile} style={{ flex: 1 }}>Back</button>
+                <button className="pill accent" disabled={!code} onClick={() => onImport(parsed, code, source)} style={{ flex: 2 }}>Import {parsed.positions.length}</button>
               </div>
             </div>
           )}
@@ -1024,11 +1051,11 @@ export default function App() {
   }, [currency, fx, flashStatus]);
 
   /* ---- mutations ---- */
-  const handleImport = useCallback((parsed, holderCode) => {
-    const plan = buildImportPlan(portfolioRef.current, parsed, { holderCode, makeId: genId });
+  const handleImport = useCallback((parsed, holderCode, source) => {
+    const plan = buildImportPlan(portfolioRef.current, parsed, { holderCode, source, makeId: genId });
     applyChange(() => plan.next);
     setImporting(false);
-    flashStatus(`Imported ${plan.summary.positionsImported} positions${plan.summary.holderCreated ? ` · created ${plan.summary.holderCode}` : ''}`);
+    flashStatus(`Imported ${plan.summary.positionsImported} from ${source}${plan.summary.holderCreated ? ` · created ${plan.summary.holderCode}` : ''}`);
   }, [applyChange, flashStatus]);
 
   const openSheet = (init) => setSheet(init);
