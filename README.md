@@ -72,3 +72,4 @@ src/lib/model.js   Pure derivations and currency-aware formatters
 src/lib/api.js     Frontend API client
 src/App.jsx        Navigation stack, four surfaces, depth rail, add/edit sheet
 ```
+To deploy: cd /Users/jc/Developer/Consolio && ./deploy.sh ~/Downloads/consolio_vN.zip "description"
