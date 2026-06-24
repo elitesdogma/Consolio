@@ -11,7 +11,7 @@ import { splitCsvLine, num } from './imports.js';
 
 /**
  * Parse a native IBKR Activity Statement CSV.
- * @returns {{positions: {ticker:string, shares:number, costPerShare:number}[],
+ * @returns {{lots: {ticker:string, shares:number, costPerShare:number, date:null}[],
  *            instruments: Record<string,{name:string,type:string,exch:string,isin:string}>,
  *            warnings: string[], ok: boolean}}
  */
@@ -73,15 +73,15 @@ export function parseIbkrCsv(text) {
   }
 
   const tickersWithLot = new Set(raw.filter((p) => p.disc === 'Lot').map((p) => p.ticker));
-  let positions = raw.filter((p) => (tickersWithLot.has(p.ticker) ? p.disc === 'Lot' : p.disc === 'Summary'));
+  const chosen = raw.filter((p) => (tickersWithLot.has(p.ticker) ? p.disc === 'Lot' : p.disc === 'Summary'));
 
-  positions = positions.filter((p) => {
+  const lots = chosen.filter((p) => {
     if (!Number.isFinite(p.shares) || !Number.isFinite(p.costPerShare)) {
       warnings.push(`Skipped ${p.ticker} (missing quantity or cost).`);
       return false;
     }
     return true;
-  }).map((p) => ({ ticker: p.ticker, shares: p.shares, costPerShare: p.costPerShare }));
+  }).map((p) => ({ ticker: p.ticker, shares: p.shares, costPerShare: p.costPerShare, date: null }));
 
-  return { positions, instruments, warnings, ok: positions.length > 0 };
+  return { lots, instruments, warnings, ok: lots.length > 0 };
 }

@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { buildModel, createFormatters, chartPath, tone, toneChip, fxSensitivity } from './lib/model.js';
 import { loadPortfolio, savePortfolio, fetchQuotes, fetchFx, fetchSparks } from './lib/api.js';
 import { parseIbkrCsv } from './lib/ibkr.js';
-import { parseSharesiesCsv } from './lib/sharesies.js';
-import { buildImportPlan } from './lib/imports.js';
+import { parseSharesiesCsv, parseSharesiesTransactions } from './lib/sharesies.js';
+import { buildImportPlan, reconstructLots } from './lib/imports.js';
 
 const REFRESH_INTERVAL_MS = 120_000;
 const EASE = 'cubic-bezier(0.22,1,0.36,1)';
@@ -486,9 +486,10 @@ function PositionSurface({ pos, holderName, fmt, spark, openSecurity, openPositi
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {pos.lots.map((lot) => (
           <div key={lot.id} className="row" style={{ gridTemplateColumns: '1fr auto auto', cursor: 'default' }}>
-            <span style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span className="chip neutral">{lot.source}</span>
               <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>{fmt.shares(lot.shares)} sh @ {fmt.price(lot.costPerShare)}</span>
+              {lot.date && <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>{lot.date}</span>}
             </span>
             <button className="delbtn" onClick={() => editLot(lot)} aria-label="Edit lot" title="Edit lot" style={{ width: 'auto', padding: '0 11px', fontFamily: 'var(--mono)', fontSize: 11 }}>Edit</button>
             <button className="delbtn" onClick={() => deleteLot(lot.id)} aria-label="Delete lot" title="Delete lot"><IX /></button>
@@ -712,57 +713,85 @@ function AddSheet({ sheet, model, fmt, setDraft, setTab, onSubmitLot, onSubmitHo
 const IMPORT_SOURCES = {
   IBKR: {
     label: 'Interactive Brokers',
-    parse: parseIbkrCsv,
-    hint: 'Upload a native IBKR Activity Statement (CSV). Consolio reads the Open Positions section: your current US-stock holdings, quantities and cost basis.',
+    files: [{ key: 'statement', label: 'Activity Statement (CSV)' }],
+    hint: 'Upload your IBKR Activity Statement (CSV). Consolio reads the Open Positions section for your current US-stock holdings.',
+    build: (texts) => {
+      const r = parseIbkrCsv(texts.statement);
+      if (!r.ok) return { error: r.warnings?.[0] || 'No US-stock positions found in this file.' };
+      return { lots: r.lots, instruments: r.instruments, warnings: r.warnings, perTicker: null };
+    },
   },
   Sharesies: {
     label: 'Sharesies',
-    parse: parseSharesiesCsv,
-    hint: 'Upload a Sharesies Investment holdings report (CSV). Set the report’s From date to before your first purchase so cost basis is complete for every holding.',
+    files: [
+      { key: 'holdings', label: 'Investment holdings report (CSV)' },
+      { key: 'transactions', label: 'Transaction report (CSV)' },
+    ],
+    hint: 'Upload both Sharesies reports, exported from the earliest date. The holdings report sets your current share counts and handles splits; the transaction report supplies each individual buy price and date.',
+    build: (texts) => {
+      const h = parseSharesiesCsv(texts.holdings);
+      if (!h.ok) return { error: h.warnings?.[0] || 'The holdings report has no current holdings, or the wrong file is in this slot.' };
+      const t = parseSharesiesTransactions(texts.transactions);
+      if (!t.ok) return { error: t.warnings?.[0] || 'The transaction report could not be read, or the wrong file is in this slot.' };
+      const { lots, perTicker } = reconstructLots(t.transactions, h.positions);
+      return { lots, instruments: { ...t.instruments, ...h.instruments }, warnings: h.warnings, perTicker };
+    },
   },
 };
 
 function ImportSheet({ portfolio, onImport, onClose }) {
   const [source, setSource] = useState(null);
-  const [parsed, setParsed] = useState(null);
-  const [fileName, setFileName] = useState('');
+  const [files, setFiles] = useState({});
+  const [fileNames, setFileNames] = useState({});
   const [holderCode, setHolderCode] = useState('');
-  const [error, setError] = useState('');
   const fileRef = useRef(null);
+  const pickingKey = useRef(null);
 
   const holders = portfolio?.holders ?? [];
   const code = holderCode.trim();
   const existing = holders.find((h) => h.code === code);
   const cfg = source ? IMPORT_SOURCES[source] : null;
 
+  const muted = (size) => ({ fontSize: size, color: 'var(--ink-3)' });
+
+  const resetFiles = () => { setFiles({}); setFileNames({}); };
+  const chooseSource = (key) => { setSource(key); resetFiles(); };
+
+  const pick = (key) => { pickingKey.current = key; fileRef.current?.click(); };
   const onFile = (e) => {
     const file = e.target.files?.[0];
-    if (!file || !cfg) return;
-    setError('');
-    setFileName(file.name);
-    const stem = file.name.replace(/\.[^.]+$/, '').trim().toUpperCase().slice(0, 12);
+    const key = pickingKey.current;
+    e.target.value = ''; // allow re-choosing the same file
+    if (!file || !key) return;
     const reader = new FileReader();
     reader.onload = () => {
-      try {
-        const res = cfg.parse(String(reader.result));
-        if (!res.ok) {
-          setParsed(null);
-          setError(res.warnings?.[0] || 'No current US-stock holdings found in this file.');
-          return;
-        }
-        setParsed(res);
-        setHolderCode((cur) => cur || stem);
-      } catch {
-        setParsed(null);
-        setError('Could not read this file.');
-      }
+      setFiles((prev) => ({ ...prev, [key]: String(reader.result) }));
+      setFileNames((prev) => ({ ...prev, [key]: file.name }));
+      const stem = file.name.replace(/\.[^.]+$/, '').trim();
+      if (/^[A-Za-z]{1,4}$/.test(stem)) setHolderCode((cur) => cur || stem.toUpperCase());
     };
-    reader.onerror = () => setError('Could not read the file.');
+    reader.onerror = () => {};
     reader.readAsText(file);
   };
 
-  const muted = (size) => ({ fontSize: size, color: 'var(--ink-3)' });
-  const backToFile = () => { setParsed(null); setFileName(''); setError(''); };
+  const allIn = cfg ? cfg.files.every((f) => files[f.key] != null) : false;
+  let built = null;
+  if (allIn) { try { built = cfg.build(files); } catch { built = { error: 'Could not read these files.' }; } }
+  const ready = !!(built && !built.error);
+
+  // Group imported lots by ticker for the preview.
+  const groups = [];
+  if (ready) {
+    const byTicker = {};
+    for (const l of built.lots) {
+      const g = byTicker[l.ticker] || (byTicker[l.ticker] = { ticker: l.ticker, shares: 0, count: 0, cost: 0 });
+      g.shares += l.shares; g.count += 1; g.cost += l.shares * l.costPerShare;
+    }
+    groups.push(...Object.values(byTicker));
+  }
+  const consolidatedTickers = ready && built.perTicker
+    ? Object.entries(built.perTicker).filter(([, m]) => m.mode === 'consolidated').map(([t]) => t)
+    : [];
 
   return (
     <>
@@ -775,28 +804,37 @@ function ImportSheet({ portfolio, onImport, onClose }) {
             <button className="iconbtn" onClick={onClose} aria-label="Close"><IX /></button>
           </div>
 
+          <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: 'none' }} />
+
           {!source && (
             <div>
               <p style={{ ...muted(13), lineHeight: 1.5, margin: '2px 0 16px' }}>Import current holdings from a broker CSV. Choose your broker.</p>
               {Object.entries(IMPORT_SOURCES).map(([key, c]) => (
-                <button key={key} className="pill" onClick={() => setSource(key)} style={{ width: '100%', marginBottom: 8 }}>{c.label}<IArrowR /></button>
+                <button key={key} className="pill" onClick={() => chooseSource(key)} style={{ width: '100%', marginBottom: 8 }}>{c.label}<IArrowR /></button>
               ))}
             </div>
           )}
 
-          {source && !parsed && (
+          {source && !ready && (
             <div>
-              <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: 'none' }} />
               <p style={{ ...muted(13), lineHeight: 1.5, margin: '2px 0 16px' }}>{cfg.hint}</p>
-              <button className="pill accent" onClick={() => fileRef.current?.click()} style={{ width: '100%' }}><IUpload />Choose CSV file</button>
-              {error && <div className="banner" style={{ marginTop: 12 }}><span>{error}</span></div>}
-              <button className="pill" onClick={() => setSource(null)} style={{ width: '100%', marginTop: 8 }}>Back</button>
+              {cfg.files.map((f) => (
+                <div key={f.key} style={{ marginBottom: 10 }}>
+                  <div style={{ ...muted(11.5), marginBottom: 5 }}>{f.label}</div>
+                  <button className={fileNames[f.key] ? 'pill' : 'pill accent'} onClick={() => pick(f.key)} style={{ width: '100%' }}>
+                    {fileNames[f.key] ? fileNames[f.key] : <><IUpload />Choose file</>}
+                  </button>
+                </div>
+              ))}
+              {allIn && built?.error && <div className="banner" style={{ marginTop: 12 }}><span style={{ fontSize: 12 }}>{built.error}</span></div>}
+              {!allIn && cfg.files.length > 1 && <div style={{ ...muted(11.5), marginTop: 4 }}>Both files are needed to continue.</div>}
+              <button className="pill" onClick={() => setSource(null)} style={{ width: '100%', marginTop: 12 }}>Back</button>
             </div>
           )}
 
-          {source && parsed && (
+          {source && ready && (
             <div>
-              <div style={{ ...muted(12), marginBottom: 12 }}>{fileName} · {parsed.positions.length} current holdings</div>
+              <div style={{ ...muted(12), marginBottom: 12 }}>{groups.length} current holdings · {built.lots.length} lots</div>
 
               <div className="field-group">
                 <label className="field-label">Import into holder</label>
@@ -809,24 +847,31 @@ function ImportSheet({ portfolio, onImport, onClose }) {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 230, overflowY: 'auto' }}>
-                {parsed.positions.map((p) => (
-                  <div key={p.ticker} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'baseline', padding: '5px 2px', borderTop: '1px solid var(--line-soft)' }}>
-                    <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{p.ticker}</span>
-                    <span className="mono" style={{ ...muted(12) }}>{Number(p.shares).toLocaleString('en-US', { maximumFractionDigits: 4 })} sh</span>
-                    <span className="mono" style={{ fontSize: 12, textAlign: 'right', minWidth: 78, color: p.costPerShare > 0 ? 'var(--ink)' : 'var(--ink-4)' }}>{p.costPerShare > 0 ? '$' + p.costPerShare.toFixed(2) : 'no cost'}</span>
-                  </div>
-                ))}
+                {groups.map((g) => {
+                  const consolidated = built.perTicker?.[g.ticker]?.mode === 'consolidated';
+                  const avg = g.shares > 0 ? g.cost / g.shares : 0;
+                  return (
+                    <div key={g.ticker} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'baseline', padding: '5px 2px', borderTop: '1px solid var(--line-soft)' }}>
+                      <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{g.ticker}</span>
+                      <span className="mono" style={{ ...muted(11.5) }}>{Number(g.shares).toLocaleString('en-US', { maximumFractionDigits: 4 })} sh · {consolidated ? 'consolidated' : `${g.count} lot${g.count !== 1 ? 's' : ''}`}</span>
+                      <span className="mono" style={{ fontSize: 12, textAlign: 'right', minWidth: 70, color: avg > 0 ? 'var(--ink)' : 'var(--ink-4)' }}>{avg > 0 ? '$' + avg.toFixed(2) : 'no cost'}</span>
+                    </div>
+                  );
+                })}
               </div>
 
-              {parsed.warnings.length > 0 && (
+              {consolidatedTickers.length > 0 && (
                 <div className="banner" style={{ marginTop: 12 }}>
-                  <span style={{ fontSize: 12 }}>{parsed.warnings.slice(0, 3).join(' ')}{parsed.warnings.length > 3 ? ` (+${parsed.warnings.length - 3} more)` : ''}</span>
+                  <span style={{ fontSize: 12 }}>Kept as a single line (buys did not reconcile to the current share count, usually a split): {consolidatedTickers.join(', ')}.</span>
                 </div>
+              )}
+              {built.warnings?.length > 0 && (
+                <div style={{ ...muted(11), marginTop: 8 }}>{built.warnings.slice(0, 2).join(' ')}</div>
               )}
 
               <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                <button className="pill" onClick={backToFile} style={{ flex: 1 }}>Back</button>
-                <button className="pill accent" disabled={!code} onClick={() => onImport(parsed, code, source)} style={{ flex: 2 }}>Import {parsed.positions.length}</button>
+                <button className="pill" onClick={resetFiles} style={{ flex: 1 }}>Back</button>
+                <button className="pill accent" disabled={!code} onClick={() => onImport({ lots: built.lots, instruments: built.instruments }, code, source)} style={{ flex: 2 }}>Import {built.lots.length} lots</button>
               </div>
             </div>
           )}
@@ -1055,7 +1100,7 @@ export default function App() {
     const plan = buildImportPlan(portfolioRef.current, parsed, { holderCode, source, makeId: genId });
     applyChange(() => plan.next);
     setImporting(false);
-    flashStatus(`Imported ${plan.summary.positionsImported} from ${source}${plan.summary.holderCreated ? ` · created ${plan.summary.holderCode}` : ''}`);
+    flashStatus(`Imported ${plan.summary.positionsImported} holdings (${plan.summary.lotsImported} lots) from ${source}${plan.summary.holderCreated ? ` · created ${plan.summary.holderCode}` : ''}`);
   }, [applyChange, flashStatus]);
 
   const openSheet = (init) => setSheet(init);
