@@ -4,6 +4,7 @@ import { loadPortfolio, savePortfolio, fetchQuotes, fetchFx, fetchSparks } from 
 import { parseIbkrCsv } from './lib/ibkr.js';
 import { parseSharesiesCsv, parseSharesiesTransactions } from './lib/sharesies.js';
 import { buildImportPlan, reconstructLots } from './lib/imports.js';
+import { computeFifByHolder, makeFrankfurterRate } from './lib/fif.js';
 
 const REFRESH_INTERVAL_MS = 120_000;
 const EASE = 'cubic-bezier(0.22,1,0.36,1)';
@@ -193,8 +194,75 @@ function FxPanel({ usdTotal, fx }) {
   );
 }
 
+/* ---- FIF de minimis bands (display heuristic on cost / threshold) ---- */
+const FIF_BANDS = [
+  { min: 1.0, key: 'crit', colour: 'var(--crit)' },
+  { min: 0.85, key: 'high', colour: 'var(--high)' },
+  { min: 0.6, key: 'med', colour: 'var(--med)' },
+  { min: 0, key: 'low', colour: 'var(--low)' },
+];
+const fifBand = (r) => FIF_BANDS.find((b) => r >= b.min) ?? FIF_BANDS[FIF_BANDS.length - 1];
+
+/* Indicative NZD cost of the FIF interests held by each holder, against the de
+   minimis threshold. Every Consolio holding is a US share, a FIF interest for a
+   NZ resident; a natural person stays outside the FIF rules while total cost is
+   at or below the threshold, whereas trusts and companies have no de minimis.
+   NZD cost is converted at reference FX on each purchase date, so it is
+   indicative rather than the broker figure, and it sums currently-held lots
+   rather than the highest cost reached during the tax year. */
+function FifPanel({ fif, threshold, setThreshold }) {
+  if (!fif || !fif.rows || fif.rows.length === 0) return null;
+  const nzd = createFormatters('USD', 1).money; // '$' + K/M abbreviation on a raw NZD number
+  const options = [{ v: 50000, label: '$50k' }, { v: 100000, label: '$100k' }];
+  return (
+    <section className="glass-2" style={{ borderRadius: 22, padding: '16px 18px', marginBottom: 14 }}>
+      <div className="sec-t" style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <span>FIF threshold</span>
+        <div className="segmented">
+          {options.map((o) => (
+            <button key={o.v} className={`seg ${threshold === o.v ? 'on' : ''}`} onClick={() => setThreshold(o.v)}>{o.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {fif.rows.map((r) => {
+          const ratio = threshold > 0 ? r.nzdCost / threshold : 0;
+          const band = fifBand(ratio);
+          const headroom = threshold - r.nzdCost;
+          return (
+            <div key={r.code} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+                <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>
+                  {r.code}<span style={{ color: 'var(--ink-4)', fontWeight: 400 }}> · {r.isIndividual ? 'individual' : 'no de minimis'}</span>
+                </span>
+                <span className="mono" style={{ fontSize: 13.5, fontWeight: 600 }}>{nzd(r.nzdCost)}</span>
+              </div>
+              {r.isIndividual ? (
+                <>
+                  <span style={{ height: 8, borderRadius: 5, background: 'rgba(127,127,127,0.16)', overflow: 'hidden' }}>
+                    <span style={{ display: 'block', height: '100%', width: `${Math.min(100, ratio * 100).toFixed(1)}%`, background: band.colour, transition: 'width var(--dur) var(--ease)' }} />
+                  </span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <span className={`chip ${band.key}`}><span className="dot" />{ratio >= 1 ? 'Over threshold' : `${nzd(Math.max(0, headroom))} headroom`}</span>
+                    <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>{(ratio * 100).toFixed(0)}% of {nzd(threshold)}</span>
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.45 }}>No de minimis for trusts and companies; the FIF rules apply regardless of cost.</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ marginTop: 12, fontSize: 11, color: 'var(--ink-4)', lineHeight: 1.45 }}>
+        Indicative only. NZD cost of currently-held shares at the reference rate on each purchase date{fif.anyUndated ? ', or the current rate where a purchase date is missing' : ''}. Not the actual NZD charged, and the legal test uses the highest total cost during the tax year.
+      </div>
+    </section>
+  );
+}
+
 /* ===================== L0 · TOTAL ===================== */
-function TotalSurface({ model, fmt, currency, fx, axis, setAxis, openHolder, openSecurity, quoteNotice, pricesAsOf, holdingSort, setHoldingSort, holdingQuery, setHoldingQuery, onAdd }) {
+function TotalSurface({ model, fmt, currency, fx, axis, setAxis, openHolder, openSecurity, quoteNotice, pricesAsOf, holdingSort, setHoldingSort, holdingQuery, setHoldingQuery, onAdd, fif, fifThreshold, setFifThreshold }) {
   const { firm, holderCards, securityCards } = model;
   const empty = firm.holdersCount === 0;
   const [sortOpen, setSortOpen] = useState(false);
@@ -279,6 +347,7 @@ function TotalSurface({ model, fmt, currency, fx, axis, setAxis, openHolder, ope
         <>
           <ConcentrationPanel conc={firm.concentration} />
           <FxPanel usdTotal={firm.total} fx={fx} />
+          <FifPanel fif={fif} threshold={fifThreshold} setThreshold={setFifThreshold} />
           <div className="segmented">
             <button className={`seg ${axis === 'accounts' ? 'on' : ''}`} onClick={() => setAxis('accounts')}>Holders</button>
             <button className={`seg ${axis === 'securities' ? 'on' : ''}`} onClick={() => setAxis('securities')}>Securities</button>
@@ -490,6 +559,15 @@ function PositionSurface({ pos, holderName, fmt, spark, openSecurity, openPositi
               <span className="chip neutral">{lot.source}</span>
               <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>{fmt.shares(lot.shares)} sh @ {fmt.price(lot.costPerShare)}</span>
               {lot.date && <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-4)' }}>{lot.date}</span>}
+              {pos.priced && lot.costPerShare > 0 && (() => {
+                const g = (pos.price - lot.costPerShare) * lot.shares;
+                const pct = (pos.price / lot.costPerShare - 1) * 100;
+                return (
+                  <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: tone(g) }}>
+                    {fmt.signedMoney(g)}<span style={{ color: 'var(--ink-4)', fontWeight: 400 }}> {(pct >= 0 ? '+' : '') + pct.toFixed(1)}%</span>
+                  </span>
+                );
+              })()}
             </span>
             <button className="delbtn" onClick={() => editLot(lot)} aria-label="Edit lot" title="Edit lot" style={{ width: 'auto', padding: '0 11px', fontFamily: 'var(--mono)', fontSize: 11 }}>Edit</button>
             <button className="delbtn" onClick={() => deleteLot(lot.id)} aria-label="Delete lot" title="Delete lot"><IX /></button>
@@ -714,11 +792,12 @@ const IMPORT_SOURCES = {
   IBKR: {
     label: 'Interactive Brokers',
     files: [{ key: 'statement', label: 'Activity Statement (CSV)' }],
-    hint: 'Upload your IBKR Activity Statement (CSV). Consolio reads the Open Positions section for your current US-stock holdings.',
+    hint: 'Upload your IBKR Activity Statement (CSV). Consolio reads Open Positions for your current US-stock holdings and the Trades section for each buy, breaking a holding into its dated lots where the trades reconcile to the current share count.',
     build: (texts) => {
       const r = parseIbkrCsv(texts.statement);
       if (!r.ok) return { error: r.warnings?.[0] || 'No US-stock positions found in this file.' };
-      return { lots: r.lots, instruments: r.instruments, warnings: r.warnings, perTicker: null };
+      const { lots, perTicker } = reconstructLots(r.trades, r.positions);
+      return { lots, instruments: r.instruments, warnings: r.warnings, perTicker };
     },
   },
   Sharesies: {
@@ -744,6 +823,7 @@ function ImportSheet({ portfolio, onImport, onClose }) {
   const [files, setFiles] = useState({});
   const [fileNames, setFileNames] = useState({});
   const [holderCode, setHolderCode] = useState('');
+  const [overwrite, setOverwrite] = useState(true);
   const fileRef = useRef(null);
   const pickingKey = useRef(null);
 
@@ -840,11 +920,19 @@ function ImportSheet({ portfolio, onImport, onClose }) {
                 <label className="field-label">Import into holder</label>
                 <input className="input mono" value={holderCode} placeholder="e.g. JC" onChange={(e) => setHolderCode(e.target.value.toUpperCase())} style={{ textTransform: 'uppercase' }} />
               </div>
-              <div style={{ ...muted(11.5), margin: '-6px 0 14px' }}>
-                {existing
-                  ? `Updates ${existing.name || existing.code}. Replaces ${existing.code}'s ${source} import; manual lots and other imports are kept.`
-                  : code ? `Creates a new holder “${code}”.` : 'Enter a holder code (e.g. initials).'}
+              <div style={{ ...muted(11.5), margin: '-6px 0 10px' }}>
+                {!code
+                  ? 'Enter a holder code (e.g. initials).'
+                  : existing
+                    ? (overwrite
+                        ? `Updates ${existing.name || existing.code}. Replaces the ${source} lots already imported for ${existing.code}; manual lots and other imports are kept.`
+                        : `Adds to ${existing.name || existing.code}. Appends these lots to the existing ${source} lots for ${existing.code}.`)
+                    : `Creates a new holder ${code}.`}
               </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 9, margin: '0 0 14px', cursor: 'pointer', ...muted(12) }}>
+                <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} style={{ width: 15, height: 15, accentColor: 'var(--calm)' }} />
+                <span>Replace the existing {source} lots for this holder</span>
+              </label>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 230, overflowY: 'auto' }}>
                 {groups.map((g) => {
@@ -871,7 +959,7 @@ function ImportSheet({ portfolio, onImport, onClose }) {
 
               <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
                 <button className="pill" onClick={resetFiles} style={{ flex: 1 }}>Back</button>
-                <button className="pill accent" disabled={!code} onClick={() => onImport({ lots: built.lots, instruments: built.instruments }, code, source)} style={{ flex: 2 }}>Import {built.lots.length} lots</button>
+                <button className="pill accent" disabled={!code} onClick={() => onImport({ lots: built.lots, instruments: built.instruments }, code, source, !overwrite)} style={{ flex: 2 }}>{overwrite ? 'Import' : 'Add'} {built.lots.length} lots</button>
               </div>
             </div>
           )}
@@ -902,6 +990,8 @@ export default function App() {
   const [status, setStatus] = useState(null);
   const [navKey, setNavKey] = useState(0);
   const [conflict, setConflict] = useState(null);
+  const [fifThreshold, setFifThreshold] = useState(50000);
+  const [fif, setFif] = useState(null);
 
   const screenRef = useRef(null);
   const versionRef = useRef(null);
@@ -974,6 +1064,17 @@ export default function App() {
     const id = setInterval(() => refreshMarket(uniqueTickers(portfolioRef.current)), REFRESH_INTERVAL_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, [refreshMarket]);
+
+  /* ---- indicative FIF NZD cost per holder (historical FX, async) ---- */
+  useEffect(() => {
+    const rate = fx?.rate;
+    if (!portfolio || !Number.isFinite(rate)) { setFif(null); return; }
+    let cancelled = false;
+    computeFifByHolder(portfolio, { rateFor: makeFrankfurterRate(), spotRate: rate })
+      .then((res) => { if (!cancelled) setFif(res); })
+      .catch(() => { if (!cancelled) setFif({ rows: [], anyUndated: false, ok: false, error: 'rates' }); });
+    return () => { cancelled = true; };
+  }, [portfolio, fx]);
 
   /* ---- persistence ---- */
   const flashStatus = useCallback((text, kind = 'info', holdMs = 1600) => {
@@ -1096,11 +1197,12 @@ export default function App() {
   }, [currency, fx, flashStatus]);
 
   /* ---- mutations ---- */
-  const handleImport = useCallback((parsed, holderCode, source) => {
-    const plan = buildImportPlan(portfolioRef.current, parsed, { holderCode, source, makeId: genId });
+  const handleImport = useCallback((parsed, holderCode, source, additive = false) => {
+    const plan = buildImportPlan(portfolioRef.current, parsed, { holderCode, source, makeId: genId, additive });
     applyChange(() => plan.next);
     setImporting(false);
-    flashStatus(`Imported ${plan.summary.positionsImported} holdings (${plan.summary.lotsImported} lots) from ${source}${plan.summary.holderCreated ? ` · created ${plan.summary.holderCode}` : ''}`);
+    const verb = additive ? 'Added' : 'Imported';
+    flashStatus(`${verb} ${plan.summary.positionsImported} holdings (${plan.summary.lotsImported} lots) from ${source}${plan.summary.holderCreated ? ` · created ${plan.summary.holderCode}` : ''}`);
   }, [applyChange, flashStatus]);
 
   const openSheet = (init) => setSheet(init);
@@ -1269,6 +1371,7 @@ export default function App() {
               holdingSort={holdingSort} setHoldingSort={setHoldingSort}
               holdingQuery={holdingQuery} setHoldingQuery={setHoldingQuery}
               onAdd={() => openSheet({ tab: 'lot', draft: { source: 'Sharesies' }, singleTab: false })}
+              fif={fif} fifThreshold={fifThreshold} setFifThreshold={setFifThreshold}
             />
           )}
 

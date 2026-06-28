@@ -99,7 +99,7 @@ export function reconstructLots(transactions, authoritative) {
  * @param {{lots:{ticker:string,shares:number,costPerShare:number,date?:string|null}[], instruments:Record<string,{name:string}>}} parsed
  * @param {{holderCode:string, source:string, holderName?:string, makeId:() => string}} opts
  */
-export function buildImportPlan(portfolio, parsed, { holderCode, source, holderName, makeId }) {
+export function buildImportPlan(portfolio, parsed, { holderCode, source, holderName, makeId, additive = false }) {
   const code = String(holderCode || '').trim();
   if (!code) throw new Error('A holder code is required to import.');
   const importKey = String(source || '').trim();
@@ -120,8 +120,12 @@ export function buildImportPlan(portfolio, parsed, { holderCode, source, holderN
     return false;
   };
   const before = lots.length;
-  const kept = lots.filter((l) => !isPriorImport(l));
-  const lotsReplaced = before - kept.length;
+  // Overwrite (default): drop this holder's prior lots from the same source, then
+  // append the incoming lots, so a re-import stays idempotent. Additive: keep
+  // every existing lot and append, so a second import adds to rather than
+  // replaces the holder's lots for this source.
+  const kept = additive ? [...lots] : lots.filter((l) => !isPriorImport(l));
+  const lotsReplaced = additive ? 0 : before - kept.length;
 
   for (const l of incoming) {
     const lot = { id: makeId(), holderCode: code, ticker: l.ticker, source: importKey, imported: importKey, shares: l.shares, costPerShare: l.costPerShare };
