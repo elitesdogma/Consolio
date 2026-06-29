@@ -1,44 +1,54 @@
 /* ============================================================================
-   v0.10.1 responsive layer (additive, written against the real Aperture
+   v0.11.0 responsive layer (additive, written against the real Aperture
    stylesheet).
 
-   Base design: .device is a max-width:440px full-height glass slab, and the
-   existing @media (min-width:600px) rule makes it a floating phone-shaped card.
-   On a desktop that leaves an iPhone-wide slab stranded mid-screen.
+   Base design: .device is a max-width:440px full-height glass slab; the existing
+   @media (min-width:600px) rule makes it a floating phone-shaped card. On a
+   desktop that left an iPhone-wide slab stranded mid-screen.
 
-   This layer widens the slab on tablet/desktop and lays the three Total-surface
-   panels (.panel-deck) out as a horizontal row, keeping the floating-slab look.
+   This version takes the app FULL-BLEED edge to edge on large screens (a
+   deliberate departure from the floating-slab design, chosen by the user) and
+   rearranges the content so the width is genuinely usable rather than stretched:
+     1. the slab grows to fill the viewport, dropping the phone-card radius once
+        it is effectively full width;
+     2. the three Total-surface panels (.panel-deck) become a horizontal row;
+     3. the holdings lists (.holdings-grid, both Holders and Securities views)
+        become responsive grids of compact cards instead of full-width rows, so
+        wide screens are filled with more columns rather than over-wide rows.
 
-   SPECIFICITY, NOT LOAD ORDER: the .device width is overridden with the selector
-   `html .device`, which outranks both the base `.device` rule and the existing
-   `@media .device` rule (each a single class) on specificity. This means the
-   override wins regardless of whether this file is bundled before or after
-   styles.css, removing the load-order dependency that the previous build relied
-   on. No !important is needed for the width.
+   SPECIFICITY, NOT LOAD ORDER: width overrides use `html .device`, specificity
+   (0,1,1), which outranks the base `.device` rule (0,1,0) regardless of which
+   stylesheet loads first.
 
    Phone view (below 600px) is untouched: every rule sits inside a min-width
-   query at or above the design's own 600px breakpoint.
+   query at or above the design's own 600px breakpoint, and .panel-deck /
+   .holdings-grid are plain flex columns there, exactly as before.
 ============================================================================ */
 
-/* Tablet and up: widen the floating slab. `html .device` outranks the base
-   single-class rules so this applies irrespective of stylesheet load order. */
+/* --- Slab width. Staged so it widens through tablet then goes effectively
+   full-bleed on desktop. `html .device` wins on specificity. --- */
 @media (min-width: 600px) {
   html .device { max-width: 760px; }
 }
 
+/* Desktop and up: full-bleed. The slab fills the viewport width (minus a small
+   gutter so glass edges are not flush to the screen) and the phone-card radius
+   is dropped since a full-width card reads as a page, not a device. The base
+   600px rule also sets a capped height and overflow:hidden; at full-bleed we let
+   it use the full viewport height too. */
 @media (min-width: 1040px) {
-  html .device { max-width: 940px; }
+  html .device {
+    max-width: none;
+    width: 100%;
+    border-radius: 0;
+    height: 100dvh;
+  }
+  body { padding: 0; }
 }
 
-@media (min-width: 1320px) {
-  html .device { max-width: 1040px; }
-}
-
-/* Panels as a horizontal row once there is room. The deck owns the bottom
-   spacing to the toggle below; each panel's inline margin-bottom (14px) is
-   zeroed in row mode (inline styles require !important to override). flex-wrap
-   lets a panel drop to a second line on narrow tablets rather than crushing all
-   three. Scoped to >=760px so the phone stack is unaffected. */
+/* --- Total-surface panels as a row (>=760px). The deck owns the spacing to the
+   toggle below; each panel's inline margin-bottom (14px) is zeroed in row mode
+   (inline styles need !important). --- */
 @media (min-width: 760px) {
   .panel-deck {
     display: flex;
@@ -47,7 +57,31 @@
     margin-bottom: 14px;
   }
   .panel-deck > section {
-    flex: 1 1 220px;
+    flex: 1 1 240px;
     margin-bottom: 0 !important;
+  }
+}
+
+/* --- Holdings lists as responsive grids. The wrappers are flex columns on
+   phone (untouched); from 760px they become auto-fitting grids. minmax(0,...)
+   lets cells shrink so inner row content never forces overflow. The grid
+   overrides the wrapper's inline display:flex via the higher-specificity
+   `html .holdings-grid` so load order and the inline style do not defeat it. --- */
+@media (min-width: 760px) {
+  html .holdings-grid {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 10px;
+    align-content: start;
+  }
+  /* The empty-state message spans the full grid rather than sitting in one cell. */
+  .holdings-grid > .empty { grid-column: 1 / -1; }
+}
+
+/* More columns as the screen grows, so a full-bleed 27-inch display packs the
+   list densely instead of showing three over-wide columns. */
+@media (min-width: 1440px) {
+  html .holdings-grid {
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   }
 }

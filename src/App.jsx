@@ -364,7 +364,7 @@ function TotalSurface({ model, fmt, currency, fx, axis, setAxis, openHolder, ope
           </div>
 
           {axis === 'accounts' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 13 }}>
+            <div className="holdings-grid" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 13 }}>
               {holderCards.map((c) => (
                 <button key={c.code} className="card" onClick={() => openHolder(c.code)}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -410,7 +410,7 @@ function TotalSurface({ model, fmt, currency, fx, axis, setAxis, openHolder, ope
                   )}
                 </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 11 }}>
+              <div className="holdings-grid" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 11 }}>
                 {visibleSecurities.length === 0 && (
                   <div className="empty">No holdings match “{holdingQuery}”.</div>
                 )}
