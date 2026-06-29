@@ -1,51 +1,44 @@
 /* ============================================================================
-   v0.10.0 responsive layer (additive, written against the real Aperture
+   v0.10.1 responsive layer (additive, written against the real Aperture
    stylesheet).
 
-   Base design: .device is a max-width:440px full-height glass slab (topbar /
-   scrolling .screen / depthrail), and the existing @media (min-width:600px) rule
-   makes it a floating phone-shaped card. On a desktop that leaves an iPhone-wide
-   slab stranded mid-screen.
+   Base design: .device is a max-width:440px full-height glass slab, and the
+   existing @media (min-width:600px) rule makes it a floating phone-shaped card.
+   On a desktop that leaves an iPhone-wide slab stranded mid-screen.
 
-   This layer keeps the floating-slab aesthetic and the ambient .field behind it,
-   and on tablet/desktop:
-     1. widens the slab so it uses the screen;
-     2. lays the three Total-surface panels (.panel-deck: Concentration, Fx, Fif)
-        out as a horizontal row instead of a vertical stack, so they stop
-        consuming vertical height, while the holdings list below stays full
-        width for its dense rows.
+   This layer widens the slab on tablet/desktop and lays the three Total-surface
+   panels (.panel-deck) out as a horizontal row, keeping the floating-slab look.
 
-   Phone view (below 600px) is untouched: every rule is inside a min-width query
-   at or above the design's own 600px breakpoint. On phones .panel-deck is a
-   plain block, so the panels stack exactly as before with their existing
-   margins.
+   SPECIFICITY, NOT LOAD ORDER: the .device width is overridden with the selector
+   `html .device`, which outranks both the base `.device` rule and the existing
+   `@media .device` rule (each a single class) on specificity. This means the
+   override wins regardless of whether this file is bundled before or after
+   styles.css, removing the load-order dependency that the previous build relied
+   on. No !important is needed for the width.
 
-   Load-order note: this must load AFTER styles.css so the .device width wins on
-   source order (no !important used). It is imported at the top of App.jsx, which
-   Vite bundles after the entry CSS. If the slab does not widen in the running
-   app, the cause is load order; import this in the entry after the main
-   stylesheet. Verify in the deployed app.
+   Phone view (below 600px) is untouched: every rule sits inside a min-width
+   query at or above the design's own 600px breakpoint.
 ============================================================================ */
 
-/* Tablet and up: widen the floating slab. */
+/* Tablet and up: widen the floating slab. `html .device` outranks the base
+   single-class rules so this applies irrespective of stylesheet load order. */
 @media (min-width: 600px) {
-  .device { max-width: 760px; }
+  html .device { max-width: 760px; }
 }
 
 @media (min-width: 1040px) {
-  .device { max-width: 940px; }
+  html .device { max-width: 940px; }
 }
 
 @media (min-width: 1320px) {
-  .device { max-width: 1040px; }
+  html .device { max-width: 1040px; }
 }
 
-/* Panels as a horizontal row once there is room for them side by side. The deck
-   owns the bottom spacing to the segmented toggle below; the panels' own
-   margin-bottom (14px inline) is zeroed in row mode so the row sits flush and
-   the three items are evenly gapped instead of margin-separated. flex-wrap lets
-   a third panel drop to a second line on the narrower end of the range rather
-   than crushing all three. Each panel flexes to share width with a sane floor. */
+/* Panels as a horizontal row once there is room. The deck owns the bottom
+   spacing to the toggle below; each panel's inline margin-bottom (14px) is
+   zeroed in row mode (inline styles require !important to override). flex-wrap
+   lets a panel drop to a second line on narrow tablets rather than crushing all
+   three. Scoped to >=760px so the phone stack is unaffected. */
 @media (min-width: 760px) {
   .panel-deck {
     display: flex;
