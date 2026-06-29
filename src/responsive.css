@@ -1,0 +1,60 @@
+/* ============================================================================
+   v0.10.0 responsive layer (additive, written against the real Aperture
+   stylesheet).
+
+   Base design: .device is a max-width:440px full-height glass slab (topbar /
+   scrolling .screen / depthrail), and the existing @media (min-width:600px) rule
+   makes it a floating phone-shaped card. On a desktop that leaves an iPhone-wide
+   slab stranded mid-screen.
+
+   This layer keeps the floating-slab aesthetic and the ambient .field behind it,
+   and on tablet/desktop:
+     1. widens the slab so it uses the screen;
+     2. lays the three Total-surface panels (.panel-deck: Concentration, Fx, Fif)
+        out as a horizontal row instead of a vertical stack, so they stop
+        consuming vertical height, while the holdings list below stays full
+        width for its dense rows.
+
+   Phone view (below 600px) is untouched: every rule is inside a min-width query
+   at or above the design's own 600px breakpoint. On phones .panel-deck is a
+   plain block, so the panels stack exactly as before with their existing
+   margins.
+
+   Load-order note: this must load AFTER styles.css so the .device width wins on
+   source order (no !important used). It is imported at the top of App.jsx, which
+   Vite bundles after the entry CSS. If the slab does not widen in the running
+   app, the cause is load order; import this in the entry after the main
+   stylesheet. Verify in the deployed app.
+============================================================================ */
+
+/* Tablet and up: widen the floating slab. */
+@media (min-width: 600px) {
+  .device { max-width: 760px; }
+}
+
+@media (min-width: 1040px) {
+  .device { max-width: 940px; }
+}
+
+@media (min-width: 1320px) {
+  .device { max-width: 1040px; }
+}
+
+/* Panels as a horizontal row once there is room for them side by side. The deck
+   owns the bottom spacing to the segmented toggle below; the panels' own
+   margin-bottom (14px inline) is zeroed in row mode so the row sits flush and
+   the three items are evenly gapped instead of margin-separated. flex-wrap lets
+   a third panel drop to a second line on the narrower end of the range rather
+   than crushing all three. Each panel flexes to share width with a sane floor. */
+@media (min-width: 760px) {
+  .panel-deck {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  .panel-deck > section {
+    flex: 1 1 220px;
+    margin-bottom: 0 !important;
+  }
+}

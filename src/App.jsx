@@ -5,6 +5,7 @@ import { parseIbkrCsv } from './lib/ibkr.js';
 import { parseSharesiesCsv, parseSharesiesTransactions } from './lib/sharesies.js';
 import { buildImportPlan, reconstructLots } from './lib/imports.js';
 import { computeFifByHolder, makeFrankfurterRate } from './lib/fif.js';
+import './responsive.css';
 
 const REFRESH_INTERVAL_MS = 120_000;
 const EASE = 'cubic-bezier(0.22,1,0.36,1)';
@@ -212,8 +213,15 @@ const fifBand = (r) => FIF_BANDS.find((b) => r >= b.min) ?? FIF_BANDS[FIF_BANDS.
    rather than the highest cost reached during the tax year. */
 function FifPanel({ fif, threshold, setThreshold }) {
   if (!fif || !fif.rows || fif.rows.length === 0) return null;
-  const nzd = createFormatters('USD', 1).money; // '$' + K/M abbreviation on a raw NZD number
-  const options = [{ v: 50000, label: '$50k' }, { v: 100000, label: '$100k' }];
+  // Precise NZD on the raw NZD figure: full dollars, no K/M abbreviation, and an
+  // explicit NZD marker. The threshold test turns on the exact dollar (49,400 is
+  // in, 50,100 is out), so abbreviation to the nearest thousand would hide the
+  // only digits that matter as a holder nears the line. Formatted locally rather
+  // than via createFormatters, which converts by currency and would double-count
+  // a number that is already NZD.
+  const nzdFmt = new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD', maximumFractionDigits: 0 });
+  const nzd = (v) => nzdFmt.format(Number.isFinite(v) ? v : 0);
+  const options = [{ v: 50000, label: 'NZ$50k' }, { v: 100000, label: 'NZ$100k' }];
   return (
     <section className="glass-2" style={{ borderRadius: 22, padding: '16px 18px', marginBottom: 14 }}>
       <div className="sec-t" style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
@@ -345,9 +353,11 @@ function TotalSurface({ model, fmt, currency, fx, axis, setAxis, openHolder, ope
         </section>
       ) : (
         <>
-          <ConcentrationPanel conc={firm.concentration} />
-          <FxPanel usdTotal={firm.total} fx={fx} />
-          <FifPanel fif={fif} threshold={fifThreshold} setThreshold={setFifThreshold} />
+          <div className="panel-deck">
+            <ConcentrationPanel conc={firm.concentration} />
+            <FxPanel usdTotal={firm.total} fx={fx} />
+            <FifPanel fif={fif} threshold={fifThreshold} setThreshold={setFifThreshold} />
+          </div>
           <div className="segmented">
             <button className={`seg ${axis === 'accounts' ? 'on' : ''}`} onClick={() => setAxis('accounts')}>Holders</button>
             <button className={`seg ${axis === 'securities' ? 'on' : ''}`} onClick={() => setAxis('securities')}>Securities</button>
